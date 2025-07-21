@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import oracledb
 import os
+import threading
 
 
 # ---------- Custom Oracle Connection Form ----------
@@ -66,7 +67,7 @@ class ProgressDialog(tk.Toplevel):
         self.update_idletasks()
 
 
-# ---------- Oracle Connection ----------
+# ---------- Connect to Oracle DB ----------
 def connect_to_oracle(host, port, service_name, username, password):
     try:
         dsn = f"{host}:{port}/{service_name}"
@@ -77,7 +78,7 @@ def connect_to_oracle(host, port, service_name, username, password):
         return None
 
 
-# ---------- SQL Querying Functions ----------
+# ---------- Query Functions ----------
 def get_customer_ref(conn, user_id):
     try:
         with conn.cursor() as cursor:
@@ -113,8 +114,8 @@ def get_latest_subscription(conn, customer_ref):
         return (None, None)
 
 
-# ---------- File Processing ----------
-def process_file(file_path, user_id_column, conn):
+# ---------- Threaded File Processing Function ----------
+def process_file_threaded(file_path, user_id_column, conn, progress, on_finish):
     is_excel = file_path.endswith(".xlsx")
     df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
 
@@ -123,16 +124,12 @@ def process_file(file_path, user_id_column, conn):
     start_list = []
     end_list = []
 
-    # Start progress window
-    progress = ProgressDialog(None, total_records)
-
     for i, user_id in enumerate(df[user_id_column]):
         customer_ref = get_customer_ref(conn, user_id)
 
         if customer_ref:
             start_date, end_date = get_latest_subscription(conn, customer_ref)
 
-            # Format dates
             start_str = start_date.strftime("%d-%b-%Y") if start_date else None
             end_str = end_date.strftime("%d-%b-%Y") if end_date else None
 
@@ -148,9 +145,8 @@ def process_file(file_path, user_id_column, conn):
             end_list.append(None)
             status_list.append("Customer Ref Not Found")
 
-        progress.update_progress(i + 1)
-
-    progress.destroy()
+        # Update progress in main thread
+        progress.after(0, progress.update_progress, i + 1)
 
     df["Subscription_Status"] = status_list
     df["Subscription_Start_Date"] = start_list
@@ -163,15 +159,21 @@ def process_file(file_path, user_id_column, conn):
     else:
         df.to_csv(output_file, index=False)
 
-    messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}")
+    conn.close()
+
+    # Close progress dialog & show message on main thread
+    progress.after(0, progress.destroy)
+    progress.after(0, lambda: messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}"))
+    if on_finish:
+        progress.after(0, on_finish)
 
 
-# ---------- GUI Main App ----------
+# ---------- Main GUI App ----------
 def gui_app():
     root = tk.Tk()
     root.withdraw()
 
-    # Step 1: DB Connection Form
+    # DB connection form
     conn_form = DBConnectionForm(root)
     root.wait_window(conn_form)
 
@@ -189,7 +191,7 @@ def gui_app():
     if not conn:
         return
 
-    # Step 2: File Selection
+    # File selection
     file_path = filedialog.askopenfilename(
         title="Select CSV or XLSX File",
         filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
@@ -203,17 +205,25 @@ def gui_app():
     df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
     columns = df.columns.tolist()
 
-    # Step 3: user_id column
+    # Column selector
     user_id_column = simpledialog.askstring("Column Name", f"Enter user_id column from:\n{columns}")
     if user_id_column not in columns:
         messagebox.showerror("Error", f"Invalid column: {user_id_column}")
         return
 
-    # Step 4: Process File
-    process_file(file_path, user_id_column, conn)
-    conn.close()
+    # Progress UI
+    total_records = len(df)
+    progress_win = ProgressDialog(None, total_records)
+
+    # Run threaded processing
+    thread = threading.Thread(
+        target=process_file_threaded,
+        args=(file_path, user_id_column, conn, progress_win, lambda: None),
+        daemon=True
+    )
+    thread.start()
 
 
-# ---------- Run Main ----------
+# ---------- Run the App ----------
 if __name__ == '__main__':
     gui_app()
