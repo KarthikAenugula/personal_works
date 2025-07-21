@@ -6,7 +6,7 @@ import os
 import threading
 
 
-# ---------- Custom Oracle Connection Form ----------
+# -------------------- Oracle DB Connection Form --------------------
 class DBConnectionForm(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -41,7 +41,7 @@ class DBConnectionForm(tk.Toplevel):
         self.destroy()
 
 
-# ---------- Progress Dialog ----------
+# -------------------- Progress Bar Dialog --------------------
 class ProgressDialog(tk.Toplevel):
     def __init__(self, parent, total_records):
         super().__init__(parent)
@@ -67,7 +67,7 @@ class ProgressDialog(tk.Toplevel):
         self.update_idletasks()
 
 
-# ---------- Connect to Oracle DB ----------
+# -------------------- Oracle DB Connection --------------------
 def connect_to_oracle(host, port, service_name, username, password):
     try:
         dsn = f"{host}:{port}/{service_name}"
@@ -78,12 +78,12 @@ def connect_to_oracle(host, port, service_name, username, password):
         return None
 
 
-# ---------- Query Functions ----------
+# -------------------- Query Functions --------------------
 def get_customer_ref(conn, user_id):
     try:
         with conn.cursor() as cursor:
-            userid_quoted = f"'{user_id}'"
-            cursor.execute(f"SELECT customer_ref FROM v_nonvzw_customer WHERE userid = {userid_quoted}")
+            quoted_user = f"'{user_id}'"
+            cursor.execute(f"SELECT customer_ref FROM v_nonvzw_customer WHERE userid = {quoted_user}")
             result = cursor.fetchone()
             return result[0] if result else None
     except Exception as e:
@@ -94,16 +94,13 @@ def get_customer_ref(conn, user_id):
 def get_latest_subscription(conn, customer_ref):
     try:
         with conn.cursor() as cursor:
-            cust_quoted = f"'{customer_ref}'"
+            quoted_ref = f"'{customer_ref}'"
             cursor.execute(f"""
-                SELECT start_date, end_date
-                FROM (
+                SELECT start_date, end_date FROM (
                     SELECT start_date, end_date
                     FROM scm_subscription
-                    WHERE customer_number = {cust_quoted}
-                    ORDER BY 
-                        CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC,
-                        end_date DESC
+                    WHERE customer_number = {quoted_ref}
+                    ORDER BY CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC, end_date DESC
                 )
                 WHERE ROWNUM = 1
             """)
@@ -114,69 +111,59 @@ def get_latest_subscription(conn, customer_ref):
         return (None, None)
 
 
-# ---------- Threaded File Processing Function ----------
-def process_file_threaded(file_path, user_id_column, conn, progress, on_finish):
-    is_excel = file_path.endswith(".xlsx")
-    df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
+# -------------------- Processing Thread --------------------
+def process_file_threaded(file_path, user_id_column, conn, progress, root):
+    try:
+        is_excel = file_path.endswith(".xlsx")
+        df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
 
-    total_records = len(df)
-    status_list = []
-    start_list = []
-    end_list = []
+        total_records = len(df)
+        status_list, start_list, end_list = [], [], []
 
-    for i, user_id in enumerate(df[user_id_column]):
-        customer_ref = get_customer_ref(conn, user_id)
+        for i, user_id in enumerate(df[user_id_column]):
+            customer_ref = get_customer_ref(conn, user_id)
 
-        if customer_ref:
-            start_date, end_date = get_latest_subscription(conn, customer_ref)
+            if customer_ref:
+                start_date, end_date = get_latest_subscription(conn, customer_ref)
+                start_str = start_date.strftime("%d-%b-%Y") if start_date else None
+                end_str = end_date.strftime("%d-%b-%Y") if end_date else None
 
-            start_str = start_date.strftime("%d-%b-%Y") if start_date else None
-            end_str = end_date.strftime("%d-%b-%Y") if end_date else None
-
-            start_list.append(start_str)
-            end_list.append(end_str)
-
-            if end_date:
-                status_list.append("Subscription Canceled")
+                start_list.append(start_str)
+                end_list.append(end_str)
+                status_list.append("Subscription Canceled" if end_date else "Subscription Active")
             else:
-                status_list.append("Subscription Active")
+                start_list.append(None)
+                end_list.append(None)
+                status_list.append("Customer Ref Not Found")
+
+            progress.after(0, lambda i=i+1: progress.update_progress(i))
+
+        df["Subscription_Status"] = status_list
+        df["Subscription_Start_Date"] = start_list
+        df["Subscription_End_Date"] = end_list
+
+        output_file = os.path.splitext(file_path)[0] + "_updated." + ("xlsx" if is_excel else "csv")
+        if is_excel:
+            df.to_excel(output_file, index=False)
         else:
-            start_list.append(None)
-            end_list.append(None)
-            status_list.append("Customer Ref Not Found")
+            df.to_csv(output_file, index=False)
 
-        # Update progress in main thread
-        progress.after(0, progress.update_progress, i + 1)
-
-    df["Subscription_Status"] = status_list
-    df["Subscription_Start_Date"] = start_list
-    df["Subscription_End_Date"] = end_list
-
-    output_file = os.path.splitext(file_path)[0] + "_updated." + ("xlsx" if is_excel else "csv")
-
-    if is_excel:
-        df.to_excel(output_file, index=False)
-    else:
-        df.to_csv(output_file, index=False)
-
-    conn.close()
-
-    # Close progress dialog & show message on main thread
-    progress.after(0, progress.destroy)
-    progress.after(0, lambda: messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}"))
-    if on_finish:
-        progress.after(0, on_finish)
+        conn.close()
+        progress.after(0, progress.destroy)
+        progress.after(0, lambda: messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}"))
+    except Exception as e:
+        progress.after(0, progress.destroy)
+        messagebox.showerror("Error", str(e))
 
 
-# ---------- Main GUI App ----------
+# -------------------- Main App Workflow --------------------
 def gui_app():
     root = tk.Tk()
     root.withdraw()
 
-    # DB connection form
+    # Step 1: DB Form
     conn_form = DBConnectionForm(root)
     root.wait_window(conn_form)
-
     if not conn_form.values:
         return
 
@@ -187,43 +174,34 @@ def gui_app():
         conn_form.values["username"],
         conn_form.values["password"]
     )
-
     if not conn:
         return
 
-    # File selection
+    # Step 2: File
     file_path = filedialog.askopenfilename(
-        title="Select CSV or XLSX File",
+        title="Select CSV/XLSX file",
         filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
     )
-
     if not file_path:
-        messagebox.showerror("Error", "No file selected.")
         return
 
     is_excel = file_path.endswith(".xlsx")
     df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
-    columns = df.columns.tolist()
 
-    # Column selector
-    user_id_column = simpledialog.askstring("Column Name", f"Enter user_id column from:\n{columns}")
-    if user_id_column not in columns:
-        messagebox.showerror("Error", f"Invalid column: {user_id_column}")
+    user_id_column = simpledialog.askstring("User ID Column", f"Enter user_id column from:\n{df.columns.tolist()}")
+    if not user_id_column or user_id_column not in df.columns:
+        messagebox.showerror("Error", "Invalid or missing user_id column.")
         return
 
-    # Progress UI
-    total_records = len(df)
-    progress_win = ProgressDialog(None, total_records)
+    # Step 3: Show Progress
+    progress_win = ProgressDialog(root, total_records=len(df))
 
-    # Run threaded processing
+    # Step 4: Start Threaded Processing
     thread = threading.Thread(
         target=process_file_threaded,
-        args=(file_path, user_id_column, conn, progress_win, lambda: None),
+        args=(file_path, user_id_column, conn, progress_win, root),
         daemon=True
     )
     thread.start()
 
-
-# ---------- Run the App ----------
-if __name__ == '__main__':
-    gui_app()
+    root.mainloop()
