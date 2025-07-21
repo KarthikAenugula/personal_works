@@ -1,0 +1,138 @@
+📄 Overview
+The Oracle Subscription Checker Tool is a user-friendly Python desktop application with GUI that:
+
+Connects to an Oracle database
+
+Allows user to upload a CSV or Excel file
+
+Retrieves subscription details for each user ID based on relational queries
+
+Displays a real-time record processing progress bar
+
+Outputs a cleaned file with additional subscription status columns
+
+🧩 Features
+✅ Oracle DB credentials input via GUI
+✅ Excel/CSV file upload
+✅ Configurable User ID column
+✅ Real-time Progress Dialog with counter & progress bar
+✅ Threaded processing to avoid freezing UI ("Not Responding")
+✅ Date formatting DD-MON-YYYY (no timestamp)
+✅ Outputs processed file with _updated.xlsx/.csv suffix
+✅ Subscription classification as Active or Canceled
+
+📂 Input File Format
+Upload a .csv or .xlsx file containing a column like user_id.
+
+Example:
+
+user_id	name
+12345	Alice
+23456	Bob
+🧑‍💻 Application Flow
+1. Oracle DB Login
+User enters:
+
+Host (e.g., localhost)
+
+Port (e.g., 1521)
+
+Service Name (e.g., orclpdb1)
+
+Username
+
+Password
+
+📝 These are entered in a single dialog box.
+
+2. File Upload
+Supports .xlsx and .csv
+
+Prompts to select a file
+
+3. User ID Column Input
+User is shown a list of column names in the uploaded file
+
+Prompted to specify the column name that represents user_id
+
+4. Processing Records
+For each user_id:
+
+Gets customer_ref from v_nonvzw_customer
+
+Fetches the latest start_date and end_date from scm_subscription
+
+A loading window displays processing progress in real time
+
+5. Output File
+A new output file is created with:
+
+Original data
+
+New columns:
+
+Subscription_Status
+
+Subscription_Start_Date (format: DD-MON-YYYY)
+
+Subscription_End_Date (format: DD-MON-YYYY)
+
+Examples:
+
+user_id	name	Subscription_Status	Start Date	End Date
+12345	Alice	Subscription Active	01-JAN-2024	
+23456	Bob	Subscription Canceled	01-MAY-2022	10-JAN-2023
+Output file saved as:
+
+yourfile_updated.xlsx or yourfile_updated.csv
+
+💻 Technology Stack
+Component	Library
+UI	Tkinter
+Excel/CSV handling	pandas, openpyxl
+Oracle DB	oracledb (thin)
+Background thread	threading
+🧰 Setup Instructions (for Developers)
+✅ Requirements
+Python 3.8+
+
+Oracle Database access
+
+Required Python packages:
+
+bash
+pip install oracledb pandas openpyxl tk
+No Oracle Instant Client required (uses thin mode).
+
+⏯️ Running the Tool
+Save the full script below as subscription_checker.py, and run:
+
+bash
+python subscription_checker.py
+🧾 Full Source Code
+<details> <summary>▶️ Click to Expand Code</summary>
+python
+# Paste the full script from the final working version here
+# (from previous message including: threading, progressbar, formatted dates, GUI form, etc.)
+</details>
+📌 Notes
+Dates are returned as DD-MON-YYYY
+
+Progress bar is live thanks to threading
+
+All Oracle queries use single quotes around user_id and customer_number
+
+Application exits gracefully once done
+
+Invalid or missing customer_refs are labeled appropriately
+
+📥 Output Example
+user_id	name	Subscription_Status	Subscription_Start_Date	Subscription_End_Date
+1001	John	Subscription Active	02-JAN-2023	
+1002	Jane	Subscription Canceled	01-MAY-2022	10-DEC-2023
+🧪 Testing Tips
+Use smaller datasets (10–100 rows) before testing large files
+
+Check Oracle connectivity via SQL Developer if login fails
+
+Ensure uploaded Excel has readable user_id column
