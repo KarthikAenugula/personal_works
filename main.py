@@ -6,24 +6,25 @@ import os
 import threading
 
 
-# -------------------- Oracle DB Connection Form --------------------
+# -------------------- Oracle Connection Form (with Service) --------------------
 class DBConnectionForm(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Oracle DB Connection")
-        self.geometry("340x250")
+        self.geometry("340x300")
         self.values = {}
 
-        labels = ["Host", "Port", "Service Name", "Username", "Password"]
+        labels = ["Host", "Port", "Service Name", "Username", "Password", "Subscription Service"]
         self.entries = {}
 
         for i, label in enumerate(labels):
             tk.Label(self, text=label).grid(row=i, column=0, sticky="e", padx=10, pady=5)
             entry = tk.Entry(self, width=30, show="*" if "Password" in label else "")
             entry.grid(row=i, column=1, padx=10, pady=5)
-            self.entries[label.lower().replace(" ", "_")] = entry
+            key = label.lower().replace(" ", "_")
+            self.entries[key] = entry
 
-        tk.Button(self, text="Connect", command=self.on_submit).grid(row=6, column=0, columnspan=2, pady=15)
+        tk.Button(self, text="Connect", command=self.on_submit).grid(row=len(labels), column=0, columnspan=2, pady=15)
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.grab_set()
@@ -41,7 +42,7 @@ class DBConnectionForm(tk.Toplevel):
         self.destroy()
 
 
-# -------------------- Progress Bar Dialog --------------------
+# -------------------- Progress Dialog --------------------
 class ProgressDialog(tk.Toplevel):
     def __init__(self, parent, total_records):
         super().__init__(parent)
@@ -67,7 +68,7 @@ class ProgressDialog(tk.Toplevel):
         self.update_idletasks()
 
 
-# -------------------- Oracle DB Connection --------------------
+# -------------------- Connect to Oracle --------------------
 def connect_to_oracle(host, port, service_name, username, password):
     try:
         dsn = f"{host}:{port}/{service_name}"
@@ -78,7 +79,7 @@ def connect_to_oracle(host, port, service_name, username, password):
         return None
 
 
-# -------------------- Query Functions --------------------
+# -------------------- DB Queries --------------------
 def get_customer_ref(conn, user_id):
     try:
         with conn.cursor() as cursor:
@@ -91,15 +92,17 @@ def get_customer_ref(conn, user_id):
         return None
 
 
-def get_latest_subscription(conn, customer_ref):
+def get_latest_subscription(conn, customer_ref, subscription_service):
     try:
         with conn.cursor() as cursor:
             quoted_ref = f"'{customer_ref}'"
+            quoted_service = f"'{subscription_service}'"
             cursor.execute(f"""
                 SELECT start_date, end_date FROM (
                     SELECT start_date, end_date
                     FROM scm_subscription
                     WHERE customer_number = {quoted_ref}
+                      AND service = {quoted_service}
                     ORDER BY CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC, end_date DESC
                 )
                 WHERE ROWNUM = 1
@@ -111,8 +114,8 @@ def get_latest_subscription(conn, customer_ref):
         return (None, None)
 
 
-# -------------------- Processing Thread --------------------
-def process_file_threaded(file_path, user_id_column, conn, progress, root):
+# -------------------- Threaded Processing --------------------
+def process_file_threaded(file_path, user_id_column, conn, progress, root, subscription_service):
     try:
         is_excel = file_path.endswith(".xlsx")
         df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
@@ -124,7 +127,7 @@ def process_file_threaded(file_path, user_id_column, conn, progress, root):
             customer_ref = get_customer_ref(conn, user_id)
 
             if customer_ref:
-                start_date, end_date = get_latest_subscription(conn, customer_ref)
+                start_date, end_date = get_latest_subscription(conn, customer_ref, subscription_service)
                 start_str = start_date.strftime("%d-%b-%Y") if start_date else None
                 end_str = end_date.strftime("%d-%b-%Y") if end_date else None
 
@@ -156,52 +159,59 @@ def process_file_threaded(file_path, user_id_column, conn, progress, root):
         messagebox.showerror("Error", str(e))
 
 
-# -------------------- Main App Workflow --------------------
+# -------------------- Main GUI Flow --------------------
 def gui_app():
     root = tk.Tk()
     root.withdraw()
 
-    # Step 1: DB Form
+    # Step 1: Get Oracle + Service Name
     conn_form = DBConnectionForm(root)
     root.wait_window(conn_form)
     if not conn_form.values:
         return
 
+    # Extract values
+    conn_values = conn_form.values
     conn = connect_to_oracle(
-        conn_form.values["host"],
-        conn_form.values["port"],
-        conn_form.values["service_name"],
-        conn_form.values["username"],
-        conn_form.values["password"]
+        conn_values["host"],
+        conn_values["port"],
+        conn_values["service_name"],
+        conn_values["username"],
+        conn_values["password"]
     )
     if not conn:
         return
 
-    # Step 2: File
+    subscription_service = conn_values["subscription_service"]
+
+    # Step 2: Upload File
     file_path = filedialog.askopenfilename(
-        title="Select CSV/XLSX file",
+        title="Select input file",
         filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
     )
     if not file_path:
         return
 
-    is_excel = file_path.endswith(".xlsx")
-    df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
+    df = pd.read_excel(file_path) if file_path.endswith(".xlsx") else pd.read_csv(file_path)
 
     user_id_column = simpledialog.askstring("User ID Column", f"Enter user_id column from:\n{df.columns.tolist()}")
     if not user_id_column or user_id_column not in df.columns:
         messagebox.showerror("Error", "Invalid or missing user_id column.")
         return
 
-    # Step 3: Show Progress
+    # Step 3: Show Progress & Start Thread
     progress_win = ProgressDialog(root, total_records=len(df))
 
-    # Step 4: Start Threaded Processing
     thread = threading.Thread(
         target=process_file_threaded,
-        args=(file_path, user_id_column, conn, progress_win, root),
+        args=(file_path, user_id_column, conn, progress_win, root, subscription_service),
         daemon=True
     )
     thread.start()
 
     root.mainloop()
+
+
+# -------------------- Run Script --------------------
+if __name__ == "__main__":
+    gui_app()
