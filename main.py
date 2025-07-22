@@ -24,7 +24,9 @@ class DBConnectionForm(tk.Toplevel):
             key = label.lower().replace(" ", "_")
             self.entries[key] = entry
 
-        tk.Button(self, text="Connect", command=self.on_submit).grid(row=len(labels), column=0, columnspan=2, pady=15)
+        tk.Button(self, text="Connect", command=self.on_submit).grid(
+            row=len(labels), column=0, columnspan=2, pady=15
+        )
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.grab_set()
@@ -54,7 +56,9 @@ class ProgressDialog(tk.Toplevel):
         tk.Label(self, text="Progress").pack(pady=(15, 5))
 
         self.progress_var = tk.DoubleVar()
-        self.progress = ttk.Progressbar(self, maximum=self.total, variable=self.progress_var, length=300)
+        self.progress = ttk.Progressbar(
+            self, maximum=self.total, variable=self.progress_var, length=300
+        )
         self.progress.pack(pady=5)
 
         self.status_label = tk.Label(self, text="")
@@ -72,7 +76,9 @@ class ProgressDialog(tk.Toplevel):
 def connect_to_oracle(host, port, service_name, username, password):
     try:
         dsn = f"{host}:{port}/{service_name}"
-        conn = oracledb.connect(user=username, password=password, dsn=dsn, encoding="UTF-8")
+        conn = oracledb.connect(
+            user=username, password=password, dsn=dsn
+        )
         return conn
     except Exception as e:
         messagebox.showerror("Connection Error", f"Failed to connect:\n{e}")
@@ -84,7 +90,9 @@ def get_customer_ref(conn, user_id):
     try:
         with conn.cursor() as cursor:
             quoted_user = f"'{user_id}'"
-            cursor.execute(f"SELECT customer_ref FROM v_nonvzw_customer WHERE userid = {quoted_user}")
+            cursor.execute(
+                f"SELECT customer_ref FROM v_nonvzw_customer WHERE userid = {quoted_user}"
+            )
             result = cursor.fetchone()
             return result[0] if result else None
     except Exception as e:
@@ -97,7 +105,8 @@ def get_latest_subscription(conn, customer_ref, subscription_service):
         with conn.cursor() as cursor:
             quoted_ref = f"'{customer_ref}'"
             quoted_service = f"'{subscription_service}'"
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT start_date, end_date FROM (
                     SELECT start_date, end_date
                     FROM scm_subscription
@@ -106,7 +115,8 @@ def get_latest_subscription(conn, customer_ref, subscription_service):
                     ORDER BY CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC, end_date DESC
                 )
                 WHERE ROWNUM = 1
-            """)
+                """
+            )
             result = cursor.fetchone()
             return result if result else (None, None)
     except Exception as e:
@@ -139,7 +149,7 @@ def process_file_threaded(file_path, user_id_column, conn, progress, root, subsc
                 end_list.append(None)
                 status_list.append("Customer Ref Not Found")
 
-            progress.after(0, lambda i=i+1: progress.update_progress(i))
+            progress.after(0, lambda i=i + 1: progress.update_progress(i))
 
         df["Subscription_Status"] = status_list
         df["Subscription_Start_Date"] = start_list
@@ -152,25 +162,32 @@ def process_file_threaded(file_path, user_id_column, conn, progress, root, subsc
             df.to_csv(output_file, index=False)
 
         conn.close()
-        progress.after(0, progress.destroy)
-        progress.after(0, lambda: messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}"))
+
+        # Final UI Cleanup and Exit
+        def on_complete():
+            progress.destroy()
+            messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}")
+            root.quit()
+            root.destroy()
+
+        progress.after(0, on_complete)
+
     except Exception as e:
         progress.after(0, progress.destroy)
         messagebox.showerror("Error", str(e))
 
 
-# -------------------- Main GUI Flow --------------------
+# -------------------- Main App --------------------
 def gui_app():
     root = tk.Tk()
     root.withdraw()
 
-    # Step 1: Get Oracle + Service Name
+    # Step 1: DB + Service Input Form
     conn_form = DBConnectionForm(root)
     root.wait_window(conn_form)
     if not conn_form.values:
         return
 
-    # Extract values
     conn_values = conn_form.values
     conn = connect_to_oracle(
         conn_values["host"],
@@ -184,7 +201,7 @@ def gui_app():
 
     subscription_service = conn_values["subscription_service"]
 
-    # Step 2: Upload File
+    # Step 2: File Upload
     file_path = filedialog.askopenfilename(
         title="Select input file",
         filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
@@ -199,9 +216,10 @@ def gui_app():
         messagebox.showerror("Error", "Invalid or missing user_id column.")
         return
 
-    # Step 3: Show Progress & Start Thread
+    # Step 3: Progress Window
     progress_win = ProgressDialog(root, total_records=len(df))
 
+    # Step 4: Run Processing in a Thread
     thread = threading.Thread(
         target=process_file_threaded,
         args=(file_path, user_id_column, conn, progress_win, root, subscription_service),
@@ -212,6 +230,6 @@ def gui_app():
     root.mainloop()
 
 
-# -------------------- Run Script --------------------
+# -------------------- Run the App --------------------
 if __name__ == "__main__":
     gui_app()
