@@ -4,14 +4,15 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import oracledb
 import os
 import threading
+import time
 
 
-# -------------------- Oracle Connection Form (with Service) --------------------
+# ---------------- Oracle Connection Dialog ----------------
 class DBConnectionForm(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Oracle DB Connection")
-        self.geometry("340x300")
+        self.geometry("360x320")
         self.values = {}
 
         labels = ["Host", "Port", "Service Name", "Username", "Password", "Subscription Service"]
@@ -21,12 +22,9 @@ class DBConnectionForm(tk.Toplevel):
             tk.Label(self, text=label).grid(row=i, column=0, sticky="e", padx=10, pady=5)
             entry = tk.Entry(self, width=30, show="*" if "Password" in label else "")
             entry.grid(row=i, column=1, padx=10, pady=5)
-            key = label.lower().replace(" ", "_")
-            self.entries[key] = entry
+            self.entries[label.lower().replace(" ", "_")] = entry
 
-        tk.Button(self, text="Connect", command=self.on_submit).grid(
-            row=len(labels), column=0, columnspan=2, pady=15
-        )
+        tk.Button(self, text="Connect", command=self.on_submit).grid(row=len(labels), column=0, columnspan=2, pady=15)
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.grab_set()
@@ -44,117 +42,150 @@ class DBConnectionForm(tk.Toplevel):
         self.destroy()
 
 
-# -------------------- Progress Dialog --------------------
+# ---------------- Processing Progress Dialog ----------------
 class ProgressDialog(tk.Toplevel):
     def __init__(self, parent, total_records):
         super().__init__(parent)
         self.title("Processing Records")
-        self.geometry("360x120")
+        self.geometry("380x160")
         self.resizable(False, False)
         self.total = total_records
+        self.start_time = None
 
-        tk.Label(self, text="Progress").pack(pady=(15, 5))
-
+        tk.Label(self, text="Progress").pack(pady=(12, 5))
         self.progress_var = tk.DoubleVar()
-        self.progress = ttk.Progressbar(
-            self, maximum=self.total, variable=self.progress_var, length=300
-        )
-        self.progress.pack(pady=5)
+        self.progress = ttk.Progressbar(self, maximum=self.total, variable=self.progress_var, length=300)
+        self.progress.pack(pady=6)
 
-        self.status_label = tk.Label(self, text="")
-        self.status_label.pack(pady=(5, 15))
+        self.status_label = tk.Label(self, text="Processed 0 of 0")
+        self.status_label.pack()
+
+        self.time_label = tk.Label(self, text="Estimated time remaining: calculating...")
+        self.time_label.pack(pady=(4, 10))
 
         self.grab_set()
 
     def update_progress(self, current):
         self.progress_var.set(current)
         self.status_label.config(text=f"Processed {current} of {self.total}")
+        self.update_time_remaining(current)
         self.update_idletasks()
 
+    def update_time_remaining(self, current):
+        if current == 1:
+            self.start_time = time.time()
+        elif self.start_time:
+            elapsed = time.time() - self.start_time
+            avg_time = elapsed / current
+            remaining = (self.total - current) * avg_time
+            minutes, seconds = divmod(int(remaining), 60)
+            self.time_label.config(text=f"Estimated time remaining: {minutes}m {seconds}s")
 
-# -------------------- Connect to Oracle --------------------
+
+# ---------------- Oracle Connection ----------------
 def connect_to_oracle(host, port, service_name, username, password):
     try:
         dsn = f"{host}:{port}/{service_name}"
-        conn = oracledb.connect(
-            user=username, password=password, dsn=dsn
-        )
+        conn = oracledb.connect(user=username, password=password, dsn=dsn, encoding="UTF-8")
         return conn
     except Exception as e:
-        messagebox.showerror("Connection Error", f"Failed to connect:\n{e}")
+        messagebox.showerror("Connection Error", f"Failed to connect to Oracle:\n{e}")
         return None
 
 
-# -------------------- DB Queries --------------------
-def get_customer_ref(conn, user_id):
+# ---------------- Bulk Data Fetch Functions ----------------
+def fetch_customer_refs(conn, user_ids):
     try:
         with conn.cursor() as cursor:
-            quoted_user = f"'{user_id}'"
-            cursor.execute(
-                f"SELECT customer_ref FROM v_nonvzw_customer WHERE userid = {quoted_user}"
-            )
-            result = cursor.fetchone()
-            return result[0] if result else None
-    except Exception as e:
-        print(f"Error fetching customer_ref for {user_id}: {e}")
-        return None
+            chunks = [user_ids[i:i+1000] for i in range(0, len(user_ids), 1000)]
+            results = []
 
-
-def get_latest_subscription(conn, customer_ref, subscription_service):
-    try:
-        with conn.cursor() as cursor:
-            quoted_ref = f"'{customer_ref}'"
-            quoted_service = f"'{subscription_service}'"
-            cursor.execute(
-                f"""
-                SELECT start_date, end_date FROM (
-                    SELECT start_date, end_date
-                    FROM scm_subscription
-                    WHERE customer_number = {quoted_ref}
-                      AND service = {quoted_service}
-                    ORDER BY CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC, end_date DESC
-                )
-                WHERE ROWNUM = 1
+            for chunk in chunks:
+                query = f"""
+                    SELECT userid, customer_ref
+                    FROM v_nonvzw_customer
+                    WHERE userid IN ({','.join([':{}'.format(i+1) for i in range(len(chunk))])})
                 """
-            )
-            result = cursor.fetchone()
-            return result if result else (None, None)
+                cursor.execute(query, chunk)
+                results.extend(cursor.fetchall())
+
+            return {str(row[0]): row[1] for row in results}
     except Exception as e:
-        print(f"Error fetching subscription for {customer_ref}: {e}")
-        return (None, None)
+        print("Error fetching customer_refs:", e)
+        return {}
 
 
-# -------------------- Threaded Processing --------------------
+def fetch_latest_subscriptions(conn, customer_refs, service_name):
+    try:
+        with conn.cursor() as cursor:
+            chunks = [customer_refs[i:i+1000] for i in range(0, len(customer_refs), 1000)]
+            results = []
+
+            for chunk in chunks:
+                query = f"""
+                SELECT * FROM (
+                    SELECT customer_number, start_date, end_date,
+                           RANK() OVER (PARTITION BY customer_number ORDER BY 
+                                CASE WHEN end_date IS NULL THEN 1 ELSE 0 END DESC, end_date DESC) rnk
+                    FROM scm_subscription
+                    WHERE customer_number IN ({','.join([':{}'.format(i+1) for i in range(len(chunk))])})
+                      AND service = :service
+                ) WHERE rnk = 1
+                """
+                cursor.execute(query, chunk + [service_name])
+                results.extend(cursor.fetchall())
+
+            return {row[0]: (row[1], row[2]) for row in results}
+    except Exception as e:
+        print("Error fetching subscriptions:", e)
+        return {}
+
+
+# ---------------- Background Processing ----------------
 def process_file_threaded(file_path, user_id_column, conn, progress, root, subscription_service):
     try:
         is_excel = file_path.endswith(".xlsx")
         df = pd.read_excel(file_path) if is_excel else pd.read_csv(file_path)
 
         total_records = len(df)
+        user_ids = df[user_id_column].astype(str).tolist()
+        progress.after(0, lambda: progress.update_progress(1))
+
+        # Bulk fetch
+        user_to_ref = fetch_customer_refs(conn, user_ids)
+        customer_refs = list(set(filter(None, user_to_ref.values())))
+        ref_to_subs = fetch_latest_subscriptions(conn, customer_refs, subscription_service)
+
+        # Final list for output
         status_list, start_list, end_list = [], [], []
 
-        for i, user_id in enumerate(df[user_id_column]):
-            customer_ref = get_customer_ref(conn, user_id)
+        for i, user_id in enumerate(user_ids):
+            customer_ref = user_to_ref.get(str(user_id))
+            start_str = end_str = status = None
 
             if customer_ref:
-                start_date, end_date = get_latest_subscription(conn, customer_ref, subscription_service)
-                start_str = start_date.strftime("%d-%b-%Y") if start_date else None
-                end_str = end_date.strftime("%d-%b-%Y") if end_date else None
-
-                start_list.append(start_str)
-                end_list.append(end_str)
-                status_list.append("Subscription Canceled" if end_date else "Subscription Active")
+                sub = ref_to_subs.get(customer_ref)
+                if sub:
+                    start_date, end_date = sub
+                    start_str = start_date.strftime("%d-%b-%Y") if start_date else None
+                    end_str = end_date.strftime("%d-%b-%Y") if end_date else None
+                    status = "Subscription Canceled" if end_date else "Subscription Active"
+                else:
+                    status = "Subscription Not Found"
             else:
-                start_list.append(None)
-                end_list.append(None)
-                status_list.append("Customer Ref Not Found")
+                status = "Customer Ref Not Found"
 
-            progress.after(0, lambda i=i + 1: progress.update_progress(i))
+            start_list.append(start_str)
+            end_list.append(end_str)
+            status_list.append(status)
+            progress.after(0, lambda i=i+1: progress.update_progress(i))
 
+        # Append to DataFrame
         df["Subscription_Status"] = status_list
         df["Subscription_Start_Date"] = start_list
         df["Subscription_End_Date"] = end_list
 
+        # Save file
         output_file = os.path.splitext(file_path)[0] + "_updated." + ("xlsx" if is_excel else "csv")
         if is_excel:
             df.to_excel(output_file, index=False)
@@ -163,48 +194,47 @@ def process_file_threaded(file_path, user_id_column, conn, progress, root, subsc
 
         conn.close()
 
-        # Final UI Cleanup and Exit
-        def on_complete():
+        def on_done():
             progress.destroy()
             messagebox.showinfo("Success", f"Processed file saved as:\n{output_file}")
             root.quit()
             root.destroy()
 
-        progress.after(0, on_complete)
+        progress.after(0, on_done)
 
     except Exception as e:
         progress.after(0, progress.destroy)
+        root.quit()
+        root.destroy()
         messagebox.showerror("Error", str(e))
 
 
-# -------------------- Main App --------------------
+# ---------------- Main GUI App ----------------
 def gui_app():
     root = tk.Tk()
     root.withdraw()
 
-    # Step 1: DB + Service Input Form
-    conn_form = DBConnectionForm(root)
-    root.wait_window(conn_form)
-    if not conn_form.values:
+    form = DBConnectionForm(root)
+    root.wait_window(form)
+    if not form.values:
         return
 
-    conn_values = conn_form.values
+    conn_data = form.values
     conn = connect_to_oracle(
-        conn_values["host"],
-        conn_values["port"],
-        conn_values["service_name"],
-        conn_values["username"],
-        conn_values["password"]
+        conn_data["host"],
+        conn_data["port"],
+        conn_data["service_name"],
+        conn_data["username"],
+        conn_data["password"]
     )
     if not conn:
         return
 
-    subscription_service = conn_values["subscription_service"]
+    subscription_service = conn_data["subscription_service"]
 
-    # Step 2: File Upload
+    # File Load
     file_path = filedialog.askopenfilename(
-        title="Select input file",
-        filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
+        title="Select Excel/CSV file", filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
     )
     if not file_path:
         return
@@ -216,20 +246,17 @@ def gui_app():
         messagebox.showerror("Error", "Invalid or missing user_id column.")
         return
 
-    # Step 3: Progress Window
-    progress_win = ProgressDialog(root, total_records=len(df))
+    progress = ProgressDialog(root, total_records=len(df))
 
-    # Step 4: Run Processing in a Thread
     thread = threading.Thread(
         target=process_file_threaded,
-        args=(file_path, user_id_column, conn, progress_win, root, subscription_service),
+        args=(file_path, user_id_column, conn, progress, root, subscription_service),
         daemon=True
     )
     thread.start()
-
     root.mainloop()
 
 
-# -------------------- Run the App --------------------
+# ---------------- Run App ----------------
 if __name__ == "__main__":
     gui_app()
