@@ -1,0 +1,17 @@
+Mockito.when(http.authorizeHttpRequests(any(Customizer.class)))
+       .thenAnswer(invocation -> {
+           @SuppressWarnings("unchecked")
+           Customizer<AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry> customizer =
+                   (Customizer<AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry>)
+                           invocation.getArgument(0);
+
+           // mock the correct registry type (this prevents ClassCastException)
+           AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry registry =
+                   Mockito.mock(AuthorizeHttpRequestsConfigurer.AuthorizationManagerRequestMatcherRegistry.class,
+                                RETURNS_DEEP_STUBS);
+
+           // just run the lambda (so the line is covered)
+           customizer.customize(registry);
+
+           return http;
+       });
