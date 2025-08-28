@@ -1,0 +1,37 @@
+@Test
+public void filterChainDisabledTest() throws Exception {
+    SecurityConfiguration.SecurityDisabled securityDisabled = new SecurityConfiguration.SecurityDisabled();
+
+    HttpSecurity http = mock(HttpSecurity.class);
+    DefaultSecurityFilterChain securityFilterChain = mock(DefaultSecurityFilterChain.class);
+
+    // Stub authorizeHttpRequests and execute the lambda
+    Mockito.when(http.authorizeHttpRequests(any(Customizer.class)))
+           .thenAnswer(invocation -> {
+               @SuppressWarnings("unchecked")
+               Customizer<AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry> customizer =
+                       (Customizer<AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry>)
+                               invocation.getArgument(0);
+
+               // Use RETURNS_DEEP_STUBS so chained calls like anyRequest().permitAll() don't need manual stubbing
+               AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry registry =
+                       Mockito.mock(AuthorizeHttpRequestsConfigurer.AuthorizationManagerRequestMatcherRegistry.class,
+                                    RETURNS_DEEP_STUBS);
+
+               // Run the lambda (covers requests.anyRequest().permitAll())
+               customizer.customize(registry);
+
+               return http;
+           });
+
+    // Stub other chained calls
+    Mockito.when(http.csrf(any())).thenReturn(http);
+    Mockito.when(http.build()).thenReturn(securityFilterChain);
+
+    // Call the method under test
+    SecurityFilterChain result = securityDisabled.filterChainDisabled(http);
+
+    // Assertions
+    assertNotNull(result);
+    assertNotNull(securityDisabled);
+}
